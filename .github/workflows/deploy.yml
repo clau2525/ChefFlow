@@ -1,0 +1,85 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        env:
+          # A project site lives at /<repo>/, so assets need that prefix.
+          BASE_PATH: /${{ github.event.repository.name }}/
+          # Read from the Variables tab, falling back to Secrets. These belong in
+          # Variables — Vite inlines them into the published JavaScript, so they
+          # are public the moment the site goes live, and Variables stay readable
+          # for debugging. But "Variables" and "Secrets" are two tabs on one
+          # settings page and are trivial to mix up, so accept either rather than
+          # failing a build over which tab someone clicked.
+          # Real access control lives in supabase/migrations/0001_init.sql (RLS).
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY || secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_ENABLE_GOOGLE_AUTH: ${{ vars.VITE_ENABLE_GOOGLE_AUTH }}
+        run: |
+          # Report which names are missing. Prints only set/MISSING, never a value.
+          missing=0
+          for name in VITE_SUPABASE_URL VITE_SUPABASE_ANON_KEY; do
+            if [ -n "${!name}" ]; then
+              echo "  $name: set"
+            else
+              echo "  $name: MISSING"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Required build variables are missing (see the list above)."
+            echo "::error::Add them at Settings -> Secrets and variables -> Actions."
+            echo "::error::Either the Variables or the Secrets tab works. Names must match exactly, including the VITE_ prefix."
+            exit 1
+          fi
+
+          npm run build
+
+      # Deliberately no `enablement: true`. Auto-enabling needs the API to be
+      # willing to create a Pages site, which it refuses when the repo is
+      # private on a free plan — turning a one-click settings fix into an
+      # opaque "Resource not accessible by integration". Enable Pages once by
+      # hand: Settings -> Pages -> Source -> GitHub Actions.
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
